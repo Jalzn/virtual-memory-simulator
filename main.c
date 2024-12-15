@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,8 +29,8 @@ typedef struct {
 typedef struct {
   uint32_t page;
   uint32_t frame;
+  bool referenced;
   uint32_t inserted_at;
-  uint32_t referenced_at;
 } PageTableEntry;
 
 typedef struct {
@@ -59,7 +60,7 @@ DensePageTable *create_dense_page_table(Config *config) {
     page_table->entries[i].page = 0;
     page_table->entries[i].frame = 0;
     page_table->entries[i].inserted_at = clock_time;
-    page_table->entries[i].referenced_at = clock_time;
+    page_table->entries[i].referenced = false;
   }
 
   page_table->total = num_pages;
@@ -73,7 +74,7 @@ PageTableEntry *get_page_table_entry(DensePageTable *page_table,
     PageTableEntry *entry = &page_table->entries[i];
 
     if (entry->page == page) {
-      entry->referenced_at = clock_time;
+      entry->referenced = true;
       return entry;
     }
   }
@@ -94,9 +95,9 @@ PageTableEntry *swap_with_lru(DensePageTable *page_table) {
   uint32_t oldest_time = 3999999999;
 
   for (int i = 0; i < page_table->total; i++) {
-    if (page_table->entries[i].referenced_at < oldest_time) {
-      oldest_time = page_table->entries[i].referenced_at;
+    if (!page_table->entries[i].referenced) {
       index = i;
+      break;
     }
   }
 
@@ -136,6 +137,14 @@ void MMU(uint32_t address, DensePageTable *page_table, Config *config,
   // Increments virtual clock
   clock_time++;
 
+  // Reset referenced bit every 30 clock for LRU algorithms
+  if (config->algorithm == LRU && clock_time == 200) {
+    clock_time = 0;
+    for (int i = 0; i < page_table->total; i++) {
+      page_table->entries[i].referenced = false;
+    }
+  }
+
   if (config->debug_mode) {
     printf("[MMU] Address %x, Mode: %d\n", address, 0);
   }
@@ -156,6 +165,8 @@ void MMU(uint32_t address, DensePageTable *page_table, Config *config,
     printf("\tTrying to allocate new page\n");
   }
 
+  stats->page_faults++;
+
   // TODO: Only find free entry if condition
   entry = find_free_page_table_entry(page_table);
 
@@ -165,8 +176,6 @@ void MMU(uint32_t address, DensePageTable *page_table, Config *config,
   }
 
   // Should realocate a page
-  stats->page_faults++;
-
   if (config->algorithm == FIFO) {
     entry = swap_with_fifo(page_table);
   }
@@ -182,7 +191,7 @@ void MMU(uint32_t address, DensePageTable *page_table, Config *config,
   entry->page = page;
   entry->frame = 1;
   entry->inserted_at = clock_time;
-  entry->referenced_at = clock_time;
+  entry->referenced = false;
 }
 
 void parse_arguments(int argc, char **argv, Config *config);
