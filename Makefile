@@ -3,8 +3,8 @@ CFLAGS = -Wall -Wextra -std=c99 -O2
 LDFLAGS = -lm
 
 TARGET = tp2virtual
-SOURCES = main.c DensePageTable.c
-HEADERS = DensePageTable.h PageTableEntry.h
+SOURCES = main.c DPageTable.c IPageTable.c HPageTable.c
+HEADERS = DPageTable.h IPageTable.h HPageTable.h
 
 .PHONY: all clean
 

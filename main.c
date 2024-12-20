@@ -1,19 +1,20 @@
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "DensePageTable.h"
-#include "PageTableEntry.h"
+#include "DPageTable.h"
+#include "HPageTable.h"
+#include "IPageTable.h"
+#include "Types.h"
 
 #define MAX_FILENAME 256
 
 int clock_time = 0;
 
 #define MAX_FILENAME 256
-
-typedef enum { LRU, SECOND_CHANCE, FIFO, RANDOM } Algorithm;
 
 typedef struct {
   Algorithm algorithm;
@@ -23,13 +24,7 @@ typedef struct {
   int debug_mode;
 } Config;
 
-typedef struct {
-  int total_memory_accesses;
-  int page_faults;
-  int dirty_pages_written;
-} Stats;
-
-uint32_t decode_page_from_address(uint32_t address, Config *config) {
+int decode_page_from_address(uint32_t address, Config *config) {
   uint32_t tmp = config->page_size;
   uint32_t s = 0;
 
@@ -38,98 +33,24 @@ uint32_t decode_page_from_address(uint32_t address, Config *config) {
     s++;
   }
 
-  return address >> s;
+  int total_bits = 32;
+
+  // Calcula o número de bits a descartar à direita
+  int shift = total_bits - s;
+
+  return address >> shift;
 }
 
-int dense_page_table_swap_with_lru(DensePageTable *page_table) {
-  for (int i = 0; i < page_table->count; i++) {
-    int index = (page_table->front + i) % page_table->size;
+int derivar_valor_s(int page_size) {
+  int tmp = page_size;
+  int s = 0;
 
-    if (!page_table->entries[index].referenced) {
-      return index;
-    }
+  while (tmp > 1) {
+    tmp = tmp >> 1;
+    s++;
   }
 
-  printf("Failed in LRU Algorithm, cant find a valid entry to swap\n");
-  return -1;
-}
-
-int dense_page_table_swap_with_2a(DensePageTable *page_table) {
-  for (int i = 0; i < page_table->count; i++) {
-    int index = page_table->front;
-
-    if (page_table->entries[index].referenced) {
-      int page = dense_page_table_dequeue(page_table);
-      dense_page_table_add_page(page_table, page);
-    } else {
-      return 0;
-    }
-  }
-
-  printf(
-      "Failed in SECOND_CHANCE Algorithm, cant find a valid entry to swap\n");
-  return -1;
-}
-
-int dense_page_table_swap_with_fifo(DensePageTable *page_table) { return 0; }
-
-int dense_page_tableswap_with_random(DensePageTable *page_table) {
-  int index = rand() % page_table->count;
-  return index;
-}
-
-// Simulate a single access in memory
-void MMU(uint32_t address, DensePageTable *page_table, Config *config,
-         Stats *stats) {
-  clock_time++;
-
-  // Reset referenced bit every 30 clock for LRU algorithms
-  if (config->algorithm == LRU && clock_time == 200) {
-    clock_time = 0;
-    for (int i = 0; i < page_table->size; i++) {
-      page_table->entries[i].referenced = false;
-    }
-  }
-
-  uint32_t page = decode_page_from_address(address, config);
-
-  // Page is in table, success!
-  if (dense_page_table_access_page(page_table, page) != -1) {
-    return;
-  }
-
-  stats->page_faults++;
-
-  if (page_table->count < page_table->size) {
-    dense_page_table_add_page(page_table, page);
-    return;
-  }
-
-  int target_id = -1;
-
-  if (config->algorithm == FIFO) {
-    target_id = dense_page_table_swap_with_fifo(page_table);
-  }
-
-  if (config->algorithm == SECOND_CHANCE) {
-    target_id = dense_page_table_swap_with_2a(page_table);
-  }
-
-  if (config->algorithm == LRU) {
-    target_id = dense_page_table_swap_with_lru(page_table);
-  }
-
-  if (config->algorithm == RANDOM) {
-    target_id = dense_page_tableswap_with_random(page_table);
-  }
-
-  if (target_id == -1) {
-    printf("Failed to find a valid page to swap\n");
-    exit(1);
-  }
-
-  dense_page_table_remove_page_at(page_table, target_id);
-  dense_page_table_add_page(page_table, page);
+  return s;
 }
 
 void parse_arguments(int argc, char **argv, Config *config);
@@ -141,10 +62,18 @@ int main(int argc, char **argv) {
 
   srand(1);
 
-  Stats stats = {0};
+  int num_pages = pow(2, derivar_valor_s(config.page_size));
 
-  DensePageTable *page_table =
-      dense_page_table_create(config.memory_size / config.page_size);
+  DPageTable *dpt = dpt_create(num_pages, config.memory_size / config.page_size,
+                               config.algorithm);
+
+  int num_pages_per_level = pow(2, derivar_valor_s(config.page_size) / 2);
+  HPageTable *hpt =
+      hpt_create(num_pages_per_level, num_pages_per_level,
+                 config.memory_size / config.page_size, config.algorithm);
+
+  IPageTable *ipt =
+      ipt_create(config.memory_size / config.page_size, config.algorithm);
 
   FILE *file_input = fopen(config.filename, "r");
 
@@ -152,11 +81,29 @@ int main(int argc, char **argv) {
   char rw;
 
   while (fscanf(file_input, "%x %c", &addr, &rw) == 2) {
-    MMU(addr, page_table, &config, &stats);
+    clock_time++;
+    int page_id = decode_page_from_address(addr, &config);
+    dpt_access_page(dpt, page_id, clock_time);
+    hpt_access_page(hpt, page_id, clock_time);
+    ipt_access_page(ipt, page_id, clock_time);
   }
 
-  printf("Paginas Lidas: %d\n", stats.page_faults);
+  printf("Usando a tabela densa\n");
+  printf("Acessos a memoria: %d\n", dpt->access);
+  printf("Paginas Lidas: %d\n", dpt->faults);
+  printf("Tamanho da tabela: %d\n", dpt->total);
 
+  printf("\n");
+  printf("Usando a tabela invertida\n");
+  printf("Acessos a memoria: %d\n", hpt->access);
+  printf("Paginas Lidas: %d\n", hpt->faults);
+  // printf("Tamanho da tabela: %d\n", ipt->total);
+
+  printf("\n");
+  printf("Usando a tabela invertida\n");
+  printf("Acessos a memoria: %d\n", ipt->access);
+  printf("Paginas Lidas: %d\n", ipt->faults);
+  printf("Tamanho da tabela: %d\n", ipt->total);
   return 0;
 }
 
